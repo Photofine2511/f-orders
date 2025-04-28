@@ -3,10 +3,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Upload, Check, X } from "lucide-react";
+import { Upload, Check, X, Cloud } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Album } from "@/lib/types";
 import { Progress } from "@/components/ui/progress";
+import axios from "axios";
+import api from "@/lib/api";
 
 interface AlbumUploadProps {
   onAlbumUploaded: (albumName: string, file: File) => void;
@@ -19,6 +21,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [useGoogleDrive, setUseGoogleDrive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -55,6 +58,18 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     }
     
     setFile(selectedFile);
+    
+    // For large files, suggest Google Drive upload
+    if (selectedFile.size > 100 * 1024 * 1024) {
+      setUseGoogleDrive(true);
+      toast({
+        title: "Large File Detected",
+        description: "This file will be uploaded directly to Google Drive for better reliability",
+      });
+    } else {
+      setUseGoogleDrive(false);
+    }
+    
     if (!albumName) {
       // Extract file name without extension
       const nameWithoutExt = selectedFile.name.split('.').slice(0, -1).join('.');
@@ -81,20 +96,86 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     }
   };
 
-  const processLargeFile = useCallback(async (file: File) => {
+  const uploadToGoogleDrive = useCallback(async (fileToUpload: File) => {
     setIsUploading(true);
     setUploadProgress(0);
     
     try {
-      // Simulate processing progress for large files
-      const totalChunks = 20;
-      for (let i = 1; i <= totalChunks; i++) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        setUploadProgress((i / totalChunks) * 100);
+      // Create a FormData object to send the file
+      const formData = new FormData();
+      formData.append('albumFile', fileToUpload);
+      formData.append('albumName', albumName);
+      
+      // Get token for authentication
+      const token = localStorage.getItem('photofine_token');
+      
+      // Upload directly to server which will handle Google Drive upload
+      const response = await axios.post(`${api.defaults.baseURL}/orders/upload-to-drive`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          'Authorization': token ? `Bearer ${token}` : '',
+        },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadProgress(percentCompleted);
+          }
+        }
+      });
+      
+      // Check if upload was successful
+      if (response.data && response.data.success) {
+        // Pass the file info to parent component
+        onAlbumUploaded(albumName, fileToUpload);
+        
+        toast({
+          title: "Upload Successful",
+          description: "Your album was successfully uploaded to Google Drive",
+        });
+      } else {
+        throw new Error("Upload to Google Drive failed");
+      }
+    } catch (error) {
+      console.error("Error uploading to Google Drive:", error);
+      
+      toast({
+        title: "Upload Failed",
+        description: "There was an error uploading to Google Drive. Try again or use standard upload.",
+        variant: "destructive",
+      });
+      
+      // Fall back to normal upload
+      setUseGoogleDrive(false);
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
+  }, [albumName, onAlbumUploaded, toast]);
+
+  const processLargeFile = useCallback(async (fileToProcess: File) => {
+    setIsUploading(true);
+    setUploadProgress(0);
+    
+    try {
+      // For really large files (>100MB), we'll use direct chunked upload
+      const chunkSize = 5 * 1024 * 1024; // 5MB chunks
+      const chunks = Math.ceil(fileToProcess.size / chunkSize);
+      
+      for (let i = 0; i < chunks; i++) {
+        const start = i * chunkSize;
+        const end = Math.min(fileToProcess.size, start + chunkSize);
+        const chunk = fileToProcess.slice(start, end);
+        
+        // Simulate chunk upload - in a real implementation, you'd send each chunk to the server
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        // Update progress based on chunks processed
+        const progress = Math.round(((i + 1) / chunks) * 100);
+        setUploadProgress(progress);
       }
       
       // Once "processed", we call the onAlbumUploaded function
-      onAlbumUploaded(albumName, file);
+      onAlbumUploaded(albumName, fileToProcess);
       toast({
         title: "Album Ready",
         description: "Your album is ready for processing",
@@ -121,11 +202,16 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       return;
     }
     
-    // For large files (>100MB), use the chunked approach
-    if (file.size > 100 * 1024 * 1024) {
+    // For large files, use Google Drive if available
+    if (useGoogleDrive) {
+      uploadToGoogleDrive(file);
+    } 
+    // For medium files (>20MB), use chunked approach
+    else if (file.size > 20 * 1024 * 1024) {
       processLargeFile(file);
-    } else {
-      // For smaller files, use the direct approach
+    } 
+    // For smaller files, use the direct approach
+    else {
       onAlbumUploaded(albumName, file);
       toast({
         title: "Album Ready",
@@ -136,6 +222,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
 
   const clearFile = () => {
     setFile(null);
+    setUseGoogleDrive(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -161,7 +248,9 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
             isDragging 
               ? "border-primary bg-primary/5" 
               : file 
-                ? "border-green-500 bg-green-50" 
+                ? useGoogleDrive
+                  ? "border-blue-500 bg-blue-50"
+                  : "border-green-500 bg-green-50" 
                 : "border-gray-300 hover:border-primary"
           }`}
           onDragOver={handleDragOver}
@@ -179,13 +268,22 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
           
           {file ? (
             <div className="flex flex-col items-center">
-              <div className="bg-green-100 p-2 rounded-full mb-2">
-                <Check className="h-6 w-6 text-green-600" />
+              <div className={`p-2 rounded-full mb-2 ${useGoogleDrive ? 'bg-blue-100' : 'bg-green-100'}`}>
+                {useGoogleDrive ? (
+                  <Cloud className="h-6 w-6 text-blue-600" />
+                ) : (
+                  <Check className="h-6 w-6 text-green-600" />
+                )}
               </div>
               <p className="text-sm font-medium mb-1">{file.name}</p>
               <p className="text-xs text-muted-foreground">
                 {(file.size / 1024 / 1024).toFixed(2)} MB
               </p>
+              {useGoogleDrive && (
+                <p className="text-xs text-blue-600 mt-1">
+                  Will be uploaded to Google Drive for better reliability
+                </p>
+              )}
               <Button
                 type="button"
                 variant="outline"
@@ -211,6 +309,9 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
               <p className="text-xs text-muted-foreground mt-4">
                 Supported formats: ZIP, RAR, 7Z, PDF, JPG, PNG, WEBP, GIF and other image formats
               </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Max file size: 500MB (large files will use Google Drive)
+              </p>
             </div>
           )}
         </div>
@@ -219,7 +320,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       {isUploading && (
         <div className="space-y-2">
           <div className="flex justify-between items-center">
-            <span className="text-sm">Processing file...</span>
+            <span className="text-sm">{useGoogleDrive ? "Uploading to Google Drive..." : "Processing file..."}</span>
             <span className="text-sm">{Math.round(uploadProgress)}%</span>
           </div>
           <Progress value={uploadProgress} className="w-full" />
@@ -232,7 +333,11 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         disabled={!file || !albumName.trim() || isUploading}
         onClick={handleSubmit}
       >
-        {isUploading ? "Processing..." : "Continue to Order Details"}
+        {isUploading 
+          ? useGoogleDrive 
+            ? "Uploading to Google Drive..." 
+            : "Processing..." 
+          : "Continue to Order Details"}
       </Button>
     </div>
   );
