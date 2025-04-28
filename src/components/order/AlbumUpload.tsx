@@ -40,12 +40,12 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       return;
     }
     
-    // Check file size (max 100MB)
-    const maxSize = 100 * 1024 * 1024; // 100MB
+    // Check file size (max 500MB)
+    const maxSize = 500 * 1024 * 1024; // 500MB
     if (selectedFile.size > maxSize) {
       toast({
         title: "File too large",
-        description: "File size must be less than 100MB",
+        description: "File size must be less than 500MB",
         variant: "destructive",
       });
       return;
