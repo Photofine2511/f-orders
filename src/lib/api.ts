@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { toast as showToast } from '@/hooks/use-toast';
 
-const API_URL = 'https://b-orders.onrender.com';
+const API_URL = 'https://b-orders.onrender.com/api';
 // const API_URL = 'http://localhost:5000/api'; 
 
 // Create an axios instance
