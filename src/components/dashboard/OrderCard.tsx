@@ -226,6 +226,12 @@ export const OrderCard = ({
                 <Label className="text-muted-foreground">Lamination</Label>
                 <p>{order.lamination}</p>
               </div>
+              {isAdmin && order.user && (
+                <div>
+                  <Label className="text-muted-foreground">Photographer</Label>
+                  <p>{typeof order.user === 'string' ? order.user : order.user.name || 'Unknown'}</p>
+                </div>
+              )}
               <div>
                 <Label className="text-muted-foreground">Cover Type</Label>
                 <p>{order.coverType}</p>
