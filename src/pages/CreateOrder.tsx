@@ -9,10 +9,14 @@ const CreateOrder = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [albumName, setAlbumName] = useState("");
   const [albumFile, setAlbumFile] = useState<File | null>(null);
+  const [driveFileId, setDriveFileId] = useState<string | null>(null);
 
-  const handleAlbumUploaded = (name: string, file: File) => {
+  const handleAlbumUploaded = (name: string, file: File, fileId?: string) => {
     setAlbumName(name);
     setAlbumFile(file);
+    if (fileId) {
+      setDriveFileId(fileId);
+    }
     setCurrentStep(2);
   };
 
@@ -57,7 +61,7 @@ const CreateOrder = () => {
           )}
           
           {currentStep === 2 && albumFile && (
-            <OrderForm albumName={albumName} albumFile={albumFile} />
+            <OrderForm albumName={albumName} albumFile={albumFile} driveFileId={driveFileId} />
           )}
         </Card>
       </div>

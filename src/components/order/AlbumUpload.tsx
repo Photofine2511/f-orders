@@ -10,8 +10,17 @@ import { Progress } from "@/components/ui/progress";
 import axios from "axios";
 import api from "@/lib/api";
 
+// Add directory support for the file input
+declare module 'react' {
+  interface InputHTMLAttributes<T> extends HTMLAttributes<T> {
+    // Add non-standard attributes for directory selection
+    webkitdirectory?: string;
+    directory?: string;
+  }
+}
+
 interface AlbumUploadProps {
-  onAlbumUploaded: (albumName: string, file: File) => void;
+  onAlbumUploaded: (albumName: string, file: File, driveFileId?: string) => void;
 }
 
 export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
@@ -22,17 +31,72 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [useGoogleDrive, setUseGoogleDrive] = useState(false);
+  const [driveFileId, setDriveFileId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      validateAndSetFile(selectedFile);
+    // Check if files were selected
+    if (e.target.files && e.target.files.length > 0) {
+      // If multiple files were selected (directory upload)
+      if (e.target.files.length > 1) {
+        // Create a "virtual" folder file
+        const folderName = e.target.files[0].webkitRelativePath.split('/')[0];
+        let totalSize = 0;
+        
+        // Calculate total size of all files
+        for (let i = 0; i < e.target.files.length; i++) {
+          totalSize += e.target.files[i].size;
+        }
+        
+        // Create a custom File object to represent the folder
+        const folderFile = new File(
+          [new Blob()], // Empty content
+          folderName,   // Use the folder name
+          { type: 'application/x-directory' }
+        );
+        
+        // Add custom properties to track the files inside
+        const customFolderFile = Object.defineProperties(folderFile, {
+          size: { value: totalSize },
+          isFolder: { value: true },
+          fileCount: { value: e.target.files.length },
+          files: { value: e.target.files }
+        });
+        
+        validateAndSetFile(customFolderFile);
+      } else {
+        // Single file case
+        validateAndSetFile(e.target.files[0]);
+      }
     }
   };
 
   const validateAndSetFile = (selectedFile: File) => {
-    // Check file type
+    // Check if it's a folder (either from directory input or drag-and-drop)
+    const isFolder = 
+      // From directory input (property we added)
+      (selectedFile as any).isFolder || 
+      // From drag-and-drop (general properties)
+      (selectedFile.size === 0 && selectedFile.type === '' || selectedFile.type === 'application/x-directory');
+    
+    if (isFolder) {
+      setFile(selectedFile);
+      
+      // Always use Google Drive for folders
+      setUseGoogleDrive(true);
+      toast({
+        title: "Folder Selected",
+        description: `This folder will be uploaded to Google Drive`,
+      });
+      
+      // Set album name from folder name if not already set
+      if (!albumName) {
+        setAlbumName(selectedFile.name);
+      }
+      return;
+    }
+    
+    // For regular files, check file type
     const validTypes = ['.zip', '.rar', '.7z', '.pdf', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif'];
     const fileName = selectedFile.name.toLowerCase();
     const isValidType = validTypes.some(type => fileName.endsWith(type));
@@ -40,18 +104,18 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     if (!isValidType) {
       toast({
         title: "Invalid file type",
-        description: "Please upload a ZIP, RAR, 7Z, PDF, or image file (JPG, PNG, WEBP, GIF, etc.)",
+        description: "Please upload a ZIP, RAR, 7Z, PDF, image file, or a folder",
         variant: "destructive",
       });
       return;
     }
     
-    // Check file size (max 500MB)
-    const maxSize = 500 * 1024 * 1024; // 500MB
+    // Check file size (max 1GB)
+    const maxSize = 1024 * 1024 * 1024; // 1GB
     if (selectedFile.size > maxSize) {
       toast({
         title: "File too large",
-        description: "File size must be less than 500MB",
+        description: "File size must be less than 1GB",
         variant: "destructive",
       });
       return;
@@ -59,16 +123,12 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     
     setFile(selectedFile);
     
-    // For large files, suggest Google Drive upload
-    if (selectedFile.size > 100 * 1024 * 1024) {
-      setUseGoogleDrive(true);
-      toast({
-        title: "Large File Detected",
-        description: "This file will be uploaded directly to Google Drive for better reliability",
-      });
-    } else {
-      setUseGoogleDrive(false);
-    }
+    // Always use Google Drive for files
+    setUseGoogleDrive(true);
+    toast({
+      title: "File Selected",
+      description: "This file will be uploaded to Google Drive",
+    });
     
     if (!albumName) {
       // Extract file name without extension
@@ -125,8 +185,14 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       
       // Check if upload was successful
       if (response.data && response.data.success) {
-        // Pass the file info to parent component
-        onAlbumUploaded(albumName, fileToUpload);
+        // Store the Drive file ID
+        const fileId = response.data.fileInfo?.id;
+        if (fileId) {
+          setDriveFileId(fileId);
+        }
+        
+        // Pass the file info to parent component with the drive file ID
+        onAlbumUploaded(albumName, fileToUpload, fileId);
         
         toast({
           title: "Upload Successful",
@@ -202,22 +268,8 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       return;
     }
     
-    // For large files, use Google Drive if available
-    if (useGoogleDrive) {
-      uploadToGoogleDrive(file);
-    } 
-    // For medium files (>20MB), use chunked approach
-    else if (file.size > 20 * 1024 * 1024) {
-      processLargeFile(file);
-    } 
-    // For smaller files, use the direct approach
-    else {
-      onAlbumUploaded(albumName, file);
-      toast({
-        title: "Album Ready",
-        description: "Your album is ready for processing",
-      });
-    }
+    // Always use Google Drive upload for all files and folders
+    uploadToGoogleDrive(file);
   };
 
   const clearFile = () => {
@@ -264,6 +316,9 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
             className="hidden"
             onChange={handleFileChange}
             accept=".zip,.rar,.7z,.pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tiff,.tif"
+            webkitdirectory=""
+            directory=""
+            multiple
           />
           
           {file ? (
@@ -278,6 +333,9 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
               <p className="text-sm font-medium mb-1">{file.name}</p>
               <p className="text-xs text-muted-foreground">
                 {(file.size / 1024 / 1024).toFixed(2)} MB
+                {(file as any).isFolder && (file as any).fileCount && (
+                  <span> • {(file as any).fileCount} files</span>
+                )}
               </p>
               {useGoogleDrive && (
                 <p className="text-xs text-blue-600 mt-1">
@@ -294,7 +352,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
                   clearFile();
                 }}
               >
-                <X className="h-4 w-4 mr-2" /> Remove File
+                <X className="h-4 w-4 mr-2" /> Remove {(file as any).isFolder ? 'Folder' : 'File'}
               </Button>
             </div>
           ) : (
@@ -302,15 +360,15 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
               <div className="bg-muted p-2 rounded-full mb-2">
                 <Upload className="h-6 w-6 text-muted-foreground" />
               </div>
-              <p className="text-sm font-medium">Drag and drop your album file here</p>
+              <p className="text-sm font-medium">Drag and drop your album file or folder here</p>
               <p className="text-xs text-muted-foreground mt-1">
-                or click to browse files
+                or click to browse files/folders
               </p>
               <p className="text-xs text-muted-foreground mt-4">
-                Supported formats: ZIP, RAR, 7Z, PDF, JPG, PNG, WEBP, GIF and other image formats
+                Supported formats: ZIP, RAR, 7Z, PDF, JPG, PNG, WEBP, GIF, folders and other image formats
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                Max file size: 500MB (large files will use Google Drive)
+                Max file size: 1GB (all files will be uploaded to Google Drive)
               </p>
             </div>
           )}

@@ -14,9 +14,10 @@ import { Cloud, FileUp } from "lucide-react";
 interface OrderFormProps {
   albumName: string;
   albumFile: File;
+  driveFileId?: string | null;
 }
 
-export const OrderForm = ({ albumName, albumFile }: OrderFormProps) => {
+export const OrderForm = ({ albumName, albumFile, driveFileId }: OrderFormProps) => {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [user, setUser] = useState(getCurrentUser());
@@ -67,14 +68,26 @@ export const OrderForm = ({ albumName, albumFile }: OrderFormProps) => {
       setLoading(true);
       setSubmitting(true);
       setUploadStatus('uploading');
-      setStatusMessage('Preparing to upload your file...');
+      setStatusMessage('Preparing to create your order...');
       
       // Start with initial progress
       setUploadProgress(5);
       
       // Create FormData for multipart file upload
       const formData = new FormData();
-      formData.append('file', albumFile);
+      
+      // If we already have a Google Drive file ID, we'll send that instead of re-uploading the file
+      if (driveFileId) {
+        formData.append('driveFileId', driveFileId);
+        // Still append the file details for reference, but with _info suffix to indicate it's metadata only
+        formData.append('fileName_info', albumFile.name);
+        formData.append('fileSize_info', albumFile.size.toString());
+        formData.append('fileMimeType_info', albumFile.type);
+      } else {
+        // No Drive ID, so we need to upload the file
+        formData.append('file', albumFile);
+      }
+      
       formData.append('albumName', albumName);
       formData.append('pageType', orderDetails.pageType);
       formData.append('lamination', orderDetails.lamination);
@@ -84,16 +97,25 @@ export const OrderForm = ({ albumName, albumFile }: OrderFormProps) => {
       formData.append('coverType', orderDetails.coverType);
       
       // Update status message for upload start
-      setStatusMessage('Creating Your Order...');
+      setStatusMessage(driveFileId ? 'Creating your order...' : 'Uploading album and creating order...');
       
       // Send the request with progress tracking
       await createOrder(formData, (progressEvent) => {
         // Update progress based on actual upload progress
         if (progressEvent.percentage) {
-          setUploadProgress(progressEvent.percentage);
+          // If we're using a Drive file ID, start at a higher progress value
+          const adjustedPercentage = driveFileId ? 
+            Math.min(85 + (progressEvent.percentage * 0.15), 100) : 
+            progressEvent.percentage;
+          
+          setUploadProgress(adjustedPercentage);
           
           // Update status messages based on progress with percentage
-          setStatusMessage(`Creating Your Order... ${progressEvent.percentage}%`);
+          if (driveFileId) {
+            setStatusMessage(`Creating your order... ${Math.round(adjustedPercentage)}%`);
+          } else {
+            setStatusMessage(`Uploading and creating your order... ${Math.round(adjustedPercentage)}%`);
+          }
           
           // Change to processing state when almost complete
           if (progressEvent.percentage > 90 && uploadStatus === 'uploading') {
@@ -106,7 +128,7 @@ export const OrderForm = ({ albumName, albumFile }: OrderFormProps) => {
       // Set final progress and status
       setUploadProgress(100);
       setUploadStatus('complete');
-      setStatusMessage('Upload complete!');
+      setStatusMessage('Order created!');
       
       toast({
         title: "Order Created",
@@ -122,7 +144,7 @@ export const OrderForm = ({ albumName, albumFile }: OrderFormProps) => {
     } catch (error: any) {
       setSubmitting(false);
       setUploadStatus('error');
-      setStatusMessage('Upload failed. Please try again.');
+      setStatusMessage('Order creation failed. Please try again.');
       toast({
         title: "Error",
         description: error.response?.data?.message || "An error occurred while creating your order",
