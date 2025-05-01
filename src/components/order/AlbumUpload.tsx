@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Upload, Check, X, Cloud, Folder, FileIcon } from "lucide-react";
+import { Upload, Check, X, Cloud, FileIcon } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Album } from "@/lib/types";
 import { Progress } from "@/components/ui/progress";
@@ -32,79 +32,22 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [useGoogleDrive, setUseGoogleDrive] = useState(false);
   const [driveFileId, setDriveFileId] = useState<string | null>(null);
-  const [uploadMode, setUploadMode] = useState<'file' | 'folder'>('file');
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // Check if files were selected
     if (e.target.files && e.target.files.length > 0) {
-      // If multiple files were selected (directory upload)
-      if (e.target.files.length > 1 && e.target.files[0].webkitRelativePath) {
-        // Create a "virtual" folder file
-        const folderName = e.target.files[0].webkitRelativePath.split('/')[0];
-        let totalSize = 0;
-        
-        // Calculate total size of all files
-        for (let i = 0; i < e.target.files.length; i++) {
-          totalSize += e.target.files[i].size;
-        }
-        
-        // Create a custom File object to represent the folder
-        const folderFile = new File(
-          [new Blob()], // Empty content
-          folderName,   // Use the folder name
-          { type: 'application/x-directory' }
-        );
-        
-        // Add custom properties to track the files inside
-        const customFolderFile = Object.defineProperties(folderFile, {
-          size: { value: totalSize },
-          isFolder: { value: true },
-          fileCount: { value: e.target.files.length },
-          files: { value: e.target.files }
-        });
-        
-        validateAndSetFile(customFolderFile);
-      } else {
-        // Single file case
-        validateAndSetFile(e.target.files[0]);
-      }
+      validateAndSetFile(e.target.files[0]);
     }
   };
 
   const validateAndSetFile = (selectedFile: File) => {
-    // Check if it's a folder (either from directory input or drag-and-drop)
-    const isFolder = 
-      // From directory input (property we added)
-      (selectedFile as any).isFolder || 
-      // From drag-and-drop (general properties)
-      (selectedFile.size === 0 && selectedFile.type === '' || selectedFile.type === 'application/x-directory');
-    
     // Log file details for debugging
     console.log('Validating file:', {
       name: selectedFile.name,
       size: selectedFile.size,
-      type: selectedFile.type,
-      isFolder: isFolder
+      type: selectedFile.type
     });
-    
-    if (isFolder) {
-      setFile(selectedFile);
-      
-      // Always use Google Drive for folders
-      setUseGoogleDrive(true);
-      toast({
-        title: "Folder Selected",
-        description: `This folder will be uploaded to Google Drive`,
-      });
-      
-      // Set album name from folder name if not already set
-      if (!albumName) {
-        setAlbumName(selectedFile.name);
-      }
-      return;
-    }
     
     // For regular files, check file type
     const validExtensions = ['.zip', '.rar', '.7z', '.pdf', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif'];
@@ -185,110 +128,32 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     setUploadProgress(0);
     
     try {
-      // Create a FormData object to send the file(s)
+      // Create a FormData object to send the file
       const formData = new FormData();
-      
-      // Check if we're dealing with a folder (our custom property or standard properties)
-      const isFolder = (fileToUpload as any).isFolder || 
-                      (fileToUpload.size === 0 && fileToUpload.type === '' || 
-                       fileToUpload.type === 'application/x-directory');
       
       // Log detailed file information for debugging
       console.log('File upload details:', {
         name: fileToUpload.name,
         size: fileToUpload.size,
         type: fileToUpload.type,
-        isFolder: isFolder,
         lastModified: new Date(fileToUpload.lastModified).toISOString()
       });
+        
+      // Regular file upload
+      console.log(`Regular file upload: ${fileToUpload.name} (${fileToUpload.size} bytes)`);
       
-      // Add additional metadata for folders
-      if (isFolder) {
-        // Mark this as a folder upload
-        formData.append('isFolder', 'true');
-        formData.append('folderName', fileToUpload.name);
-        
-        // Log folder upload for debugging
-        console.log(`Uploading folder: ${fileToUpload.name} with ${(fileToUpload as any).fileCount || 'unknown'} files`);
-        
-        // If we have the files collection from our custom folder object (from webkitdirectory)
-        if ((fileToUpload as any).files && (fileToUpload as any).files.length > 0) {
-          // For each file in the folder, add to formData with the same field name
-          const files = (fileToUpload as any).files;
-          
-          console.log(`Processing ${files.length} files from folder ${fileToUpload.name}`);
-          
-          // Too many files might cause issues - limit to first 20 for now
-          const maxFiles = Math.min(files.length, 20);
-          console.log(`Limiting upload to ${maxFiles} files to prevent timeouts`);
-          
-          // Add each file to the formData with proper path information
-          for (let i = 0; i < maxFiles; i++) {
-            const file = files[i];
-            
-            // Skip files larger than 50MB
-            if (file.size > 50 * 1024 * 1024) {
-              console.warn(`Skipping large file: ${file.name} (${Math.round(file.size/1024/1024)}MB)`);
-              continue;
-            }
-            
-            // Add the relative path as part of the filename to preserve folder structure
-            if (file.webkitRelativePath) {
-              // Create a new file with the relative path as name to preserve structure
-              const fileWithPath = new File(
-                [file],
-                file.webkitRelativePath, // This contains the full relative path including the file
-                { type: file.type }
-              );
-              formData.append('albumFiles', fileWithPath);
-              console.log(`Adding file with path: ${file.webkitRelativePath} (${file.size} bytes)`);
-            } else {
-              // If webkitRelativePath is not available, use folder name + filename
-              const relativePath = `${fileToUpload.name}/${file.name}`;
-              const fileWithPath = new File(
-                [file],
-                relativePath,
-                { type: file.type }
-              );
-              formData.append('albumFiles', fileWithPath);
-              console.log(`Adding file with constructed path: ${relativePath} (${file.size} bytes)`);
-            }
-          }
-          
-          if (maxFiles < files.length) {
-            toast({
-              title: "Large Folder Detected",
-              description: `Uploading the first ${maxFiles} files out of ${files.length} to prevent timeout.`,
-            });
-          }
-        } else {
-          // If we don't have the files collection, log the issue
-          console.error('Folder selected but no files property found', fileToUpload);
-          toast({
-            title: "Upload Error",
-            description: "Could not access the files in the selected folder. Please try a different folder.",
-            variant: "destructive",
-          });
-          setIsUploading(false);
-          return;
-        }
+      // Make sure the file object is valid before appending
+      if (fileToUpload instanceof File && fileToUpload.size > 0) {
+        formData.append('albumFiles', fileToUpload);
       } else {
-        // Regular file upload
-        console.log(`Regular file upload: ${fileToUpload.name} (${fileToUpload.size} bytes)`);
-        
-        // Make sure the file object is valid before appending
-        if (fileToUpload instanceof File && fileToUpload.size > 0) {
-          formData.append('albumFiles', fileToUpload);
-        } else {
-          console.error('Invalid file object:', fileToUpload);
-          toast({
-            title: "Upload Error",
-            description: "Invalid file object. Please try selecting the file again.",
-            variant: "destructive",
-          });
-          setIsUploading(false);
-          return;
-        }
+        console.error('Invalid file object:', fileToUpload);
+        toast({
+          title: "Upload Error",
+          description: "Invalid file object. Please try selecting the file again.",
+          variant: "destructive",
+        });
+        setIsUploading(false);
+        return;
       }
       
       formData.append('albumName', albumName);
@@ -308,7 +173,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         source.cancel('Upload timeout - operation took too long');
         toast({
           title: "Upload Timeout",
-          description: "The upload is taking too long. Try uploading fewer or smaller files.",
+          description: "The upload is taking too long. Try uploading a smaller file.",
           variant: "destructive",
         });
       }, 300000);
@@ -346,14 +211,9 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
           onAlbumUploaded(albumName, fileToUpload, fileId);
           
           // Show detailed success message
-          const isFolder = response.data.fileInfo?.isFolder;
-          const fileCount = response.data.fileInfo?.fileCount || 0;
-          
           toast({
             title: "Upload Successful",
-            description: isFolder 
-              ? `Your folder with ${fileCount} files was uploaded to Google Drive` 
-              : "Your album was successfully uploaded to Google Drive",
+            description: "Your album was successfully uploaded to Google Drive",
           });
         } else {
           console.error('Upload response indicates failure:', response.data);
@@ -372,6 +232,10 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         console.error('Server response:', error.response?.data);
         console.error('Status code:', error.response?.status);
         
+        // Extract detailed error message if available
+        const errorDetail = error.response?.data?.detail || error.response?.data?.error || '';
+        const errorMessage = error.response?.data?.message || 'Unknown server error';
+        
         if (error.code === 'ERR_NETWORK') {
           toast({
             title: "Network Error",
@@ -381,13 +245,19 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
           toast({
             title: "Upload Timeout",
-            description: "The upload timed out. Try uploading fewer or smaller files.",
+            description: "The upload timed out. Try uploading a smaller file.",
             variant: "destructive",
           });
         } else if (error.response?.status === 413) {
           toast({
             title: "Upload Too Large",
-            description: "The files are too large. Try uploading fewer or smaller files.",
+            description: "The file is too large. Try uploading a smaller file.",
+            variant: "destructive",
+          });
+        } else if (error.response?.status === 500) {
+          toast({
+            title: "Server Error",
+            description: `${errorMessage}${errorDetail ? ': ' + errorDetail : ''}`,
             variant: "destructive",
           });
         } else {
@@ -400,7 +270,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       } else {
         toast({
           title: "Upload Failed",
-          description: "There was an error uploading to Google Drive. Try again.",
+          description: error.message || "There was an unknown error during upload. Try again.",
           variant: "destructive",
         });
       }
@@ -423,7 +293,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       return;
     }
     
-    // Always use Google Drive upload for all files and folders
+    // Always use Google Drive upload for all files
     uploadToGoogleDrive(file);
   };
 
@@ -433,21 +303,11 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-    if (folderInputRef.current) {
-      folderInputRef.current.value = "";
-    }
-  };
-
-  const toggleUploadMode = () => {
-    setUploadMode(prev => prev === 'file' ? 'folder' : 'file');
-    clearFile();
   };
 
   const handleClickUpload = () => {
-    if (uploadMode === 'file' && fileInputRef.current) {
+    if (fileInputRef.current) {
       fileInputRef.current.click();
-    } else if (uploadMode === 'folder' && folderInputRef.current) {
-      folderInputRef.current.click();
     }
   };
 
@@ -464,37 +324,8 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         />
       </div>
 
-      <div className="flex justify-center mb-2">
-        <div className="inline-flex rounded-md shadow-sm" role="group">
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm font-medium rounded-l-lg ${
-              uploadMode === 'file' 
-                ? 'bg-primary text-white' 
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-            onClick={() => setUploadMode('file')}
-          >
-            <FileIcon className="w-4 h-4 mr-1 inline-block" />
-            File Upload
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm font-medium rounded-r-lg ${
-              uploadMode === 'folder' 
-                ? 'bg-primary text-white' 
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-            onClick={() => setUploadMode('folder')}
-          >
-            <Folder className="w-4 h-4 mr-1 inline-block" />
-            Folder Upload
-          </button>
-        </div>
-      </div>
-
       <div className="space-y-2">
-        <Label>Upload Album {uploadMode === 'folder' ? 'Folder' : 'File'}</Label>
+        <Label>Upload Album File</Label>
         <div
           className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
             isDragging 
@@ -510,24 +341,13 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
           onDrop={handleDrop}
           onClick={handleClickUpload}
         >
-          {/* Regular file input - without directory attributes */}
+          {/* Regular file input */}
           <input
             ref={fileInputRef}
             type="file"
             className="hidden"
             onChange={handleFileChange}
             accept=".zip,.rar,.7z,.pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tiff,.tif"
-          />
-          
-          {/* Folder input - with directory attributes */}
-          <input
-            ref={folderInputRef}
-            type="file"
-            className="hidden"
-            onChange={handleFileChange}
-            webkitdirectory=""
-            directory=""
-            multiple
           />
           
           {file ? (
@@ -542,9 +362,6 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
               <p className="text-sm font-medium mb-1">{file.name}</p>
               <p className="text-xs text-muted-foreground">
                 {(file.size / 1024 / 1024).toFixed(2)} MB
-                {(file as any).isFolder && (file as any).fileCount && (
-                  <span> • {(file as any).fileCount} files</span>
-                )}
               </p>
               {useGoogleDrive && (
                 <p className="text-xs text-blue-600 mt-1">
@@ -561,29 +378,19 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
                   clearFile();
                 }}
               >
-                <X className="h-4 w-4 mr-2" /> Remove {(file as any).isFolder ? 'Folder' : 'File'}
+                <X className="h-4 w-4 mr-2" /> Remove File
               </Button>
             </div>
           ) : (
             <div className="flex flex-col items-center">
               <div className="bg-muted p-2 rounded-full mb-2">
-                {uploadMode === 'folder' ? (
-                  <Folder className="h-6 w-6 text-muted-foreground" />
-                ) : (
-                  <Upload className="h-6 w-6 text-muted-foreground" />
-                )}
+                <Upload className="h-6 w-6 text-muted-foreground" />
               </div>
               <p className="text-sm font-medium">
-                {uploadMode === 'folder' 
-                  ? "Click to select a folder to upload" 
-                  : "Drag and drop your album file here or click to browse"
-                }
+                Drag and drop your album file here or click to browse
               </p>
               <p className="text-xs text-muted-foreground mt-4">
-                {uploadMode === 'folder' 
-                  ? "Entire folder contents will be uploaded" 
-                  : "Supported formats: ZIP, RAR, 7Z, PDF, JPG, PNG, WEBP, GIF and other image formats"
-                }
+                Supported formats: ZIP, RAR, 7Z, PDF, JPG, PNG, WEBP, GIF and other image formats
               </p>
               <p className="text-xs text-muted-foreground mt-1">
                 Max size: 1GB (all will be uploaded to Google Drive)
