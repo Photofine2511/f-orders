@@ -81,6 +81,14 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       // From drag-and-drop (general properties)
       (selectedFile.size === 0 && selectedFile.type === '' || selectedFile.type === 'application/x-directory');
     
+    // Log file details for debugging
+    console.log('Validating file:', {
+      name: selectedFile.name,
+      size: selectedFile.size,
+      type: selectedFile.type,
+      isFolder: isFolder
+    });
+    
     if (isFolder) {
       setFile(selectedFile);
       
@@ -99,14 +107,26 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     }
     
     // For regular files, check file type
-    const validTypes = ['.zip', '.rar', '.7z', '.pdf', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif'];
+    const validExtensions = ['.zip', '.rar', '.7z', '.pdf', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif'];
     const fileName = selectedFile.name.toLowerCase();
-    const isValidType = validTypes.some(type => fileName.endsWith(type));
+    
+    // Check if the file has a valid extension
+    let isValidType = validExtensions.some(ext => fileName.endsWith(ext));
+    
+    // If filename doesn't have extension, check MIME type
+    if (!isValidType && selectedFile.type) {
+      const validMimeTypes = [
+        'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed',
+        'application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff'
+      ];
+      isValidType = validMimeTypes.some(mime => selectedFile.type.includes(mime));
+    }
     
     if (!isValidType) {
+      console.warn(`Invalid file type: ${fileName} (${selectedFile.type})`);
       toast({
         title: "Invalid file type",
-        description: "Please upload a ZIP, RAR, 7Z, PDF, image file, or a folder",
+        description: `File type not supported. Please upload a ZIP, RAR, 7Z, PDF, or image file. File name: ${fileName}, MIME type: ${selectedFile.type || 'unknown'}`,
         variant: "destructive",
       });
       return;
@@ -117,12 +137,14 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     if (selectedFile.size > maxSize) {
       toast({
         title: "File too large",
-        description: "File size must be less than 1GB",
+        description: `File size must be less than 1GB. Current size: ${(selectedFile.size / 1024 / 1024).toFixed(2)} MB`,
         variant: "destructive",
       });
       return;
     }
     
+    // File passed validation
+    console.log(`File validated successfully: ${fileName} (${selectedFile.type || 'unknown type'})`);
     setFile(selectedFile);
     
     // Always use Google Drive for files
@@ -170,6 +192,15 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       const isFolder = (fileToUpload as any).isFolder || 
                       (fileToUpload.size === 0 && fileToUpload.type === '' || 
                        fileToUpload.type === 'application/x-directory');
+      
+      // Log detailed file information for debugging
+      console.log('File upload details:', {
+        name: fileToUpload.name,
+        size: fileToUpload.size,
+        type: fileToUpload.type,
+        isFolder: isFolder,
+        lastModified: new Date(fileToUpload.lastModified).toISOString()
+      });
       
       // Add additional metadata for folders
       if (isFolder) {
@@ -243,7 +274,21 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         }
       } else {
         // Regular file upload
-        formData.append('albumFiles', fileToUpload);
+        console.log(`Regular file upload: ${fileToUpload.name} (${fileToUpload.size} bytes)`);
+        
+        // Make sure the file object is valid before appending
+        if (fileToUpload instanceof File && fileToUpload.size > 0) {
+          formData.append('albumFiles', fileToUpload);
+        } else {
+          console.error('Invalid file object:', fileToUpload);
+          toast({
+            title: "Upload Error",
+            description: "Invalid file object. Please try selecting the file again.",
+            variant: "destructive",
+          });
+          setIsUploading(false);
+          return;
+        }
       }
       
       formData.append('albumName', albumName);
