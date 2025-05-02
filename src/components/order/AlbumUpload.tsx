@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Upload, Check, X, Cloud, FileIcon } from "lucide-react";
+import { Upload, Check, X, Cloud, FileIcon, FolderOpen, Archive } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Album } from "@/lib/types";
 import { Progress } from "@/components/ui/progress";
@@ -33,11 +33,111 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
   const [useGoogleDrive, setUseGoogleDrive] = useState(false);
   const [driveFileId, setDriveFileId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFolder, setSelectedFolder] = useState<FileList | null>(null);
+  const [isConverting, setIsConverting] = useState(false);
+  const [conversionProgress, setConversionProgress] = useState(0);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // Check if files were selected
     if (e.target.files && e.target.files.length > 0) {
       validateAndSetFile(e.target.files[0]);
+    }
+  };
+
+  const handleFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setSelectedFolder(e.target.files);
+      // Suggest album name from folder name if not set
+      if (!albumName) {
+        // Get the folder name from the first file's path
+        const path = e.target.files[0].webkitRelativePath;
+        const folderName = path.split('/')[0];
+        setAlbumName(folderName);
+      }
+    }
+  };
+
+  const convertFolderToZip = async () => {
+    if (!selectedFolder || selectedFolder.length === 0) {
+      toast({
+        title: "No folder selected",
+        description: "Please select a folder first",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsConverting(true);
+    setConversionProgress(0);
+
+    try {
+      // Show progress update
+      let currentProgress = 0;
+      const progressInterval = setInterval(() => {
+        currentProgress += 5;
+        if (currentProgress > 95) {
+          clearInterval(progressInterval);
+        } else {
+          setConversionProgress(currentProgress);
+        }
+      }, 100);
+
+      // Create JSZip instance in the browser
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      
+      // Get folder name from the first file's path
+      const folderName = selectedFolder[0].webkitRelativePath.split('/')[0];
+      
+      // Add each file to the zip
+      for (let i = 0; i < selectedFolder.length; i++) {
+        const fileObj = selectedFolder[i];
+        // Get the file path relative to the folder
+        const relativePath = fileObj.webkitRelativePath.substring(folderName.length + 1);
+        
+        // Read file content
+        const fileContent = await fileObj.arrayBuffer();
+        // Add file to zip with its relative path
+        zip.file(relativePath, fileContent);
+      }
+      
+      // Generate zip file
+      const zipBlob = await zip.generateAsync({ 
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 }
+      }, (metadata) => {
+        setConversionProgress(Math.floor(metadata.percent));
+      });
+      
+      // Create a File object from the zip blob
+      const zipFile = new File(
+        [zipBlob], 
+        `${folderName}.zip`, 
+        { type: "application/zip" }
+      );
+
+      // Clear the interval and set final progress
+      clearInterval(progressInterval);
+      setConversionProgress(100);
+      
+      // Validate and set the zip file
+      validateAndSetFile(zipFile);
+      
+      toast({
+        title: "Folder Converted",
+        description: `${folderName} successfully converted to ZIP format`,
+      });
+    } catch (error) {
+      console.error("Error converting folder to zip:", error);
+      toast({
+        title: "Conversion Failed",
+        description: "There was an error converting your folder to ZIP format",
+        variant: "destructive",
+      });
+    } finally {
+      setIsConverting(false);
     }
   };
 
@@ -305,9 +405,22 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
     }
   };
 
+  const clearFolder = () => {
+    setSelectedFolder(null);
+    if (folderInputRef.current) {
+      folderInputRef.current.value = "";
+    }
+  };
+
   const handleClickUpload = () => {
     if (fileInputRef.current) {
       fileInputRef.current.click();
+    }
+  };
+
+  const handleClickSelectFolder = () => {
+    if (folderInputRef.current) {
+      folderInputRef.current.click();
     }
   };
 
@@ -409,6 +522,87 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
           <Progress value={uploadProgress} className="w-full" />
         </div>
       )}
+
+      {/* Folder to ZIP conversion section */}
+      <div className="mt-6 pt-4 border-t border-dashed">
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <FolderOpen className="h-4 w-4" />
+              Convert Folder to ZIP
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              Have a folder of images? Convert it to ZIP format for easy upload
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <input
+              ref={folderInputRef}
+              type="file"
+              webkitdirectory="true"
+              directory="true"
+              className="hidden"
+              onChange={handleFolderSelect}
+            />
+
+            {selectedFolder ? (
+              <div className="border rounded-md p-4 bg-slate-50">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <FolderOpen className="h-5 w-5 text-blue-600" />
+                    <div>
+                      <p className="text-sm font-medium">{selectedFolder[0]?.webkitRelativePath.split('/')[0]}</p>
+                      <p className="text-xs text-muted-foreground">{selectedFolder.length} files selected</p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearFolder}
+                    disabled={isConverting}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+                
+                {isConverting && (
+                  <div className="mt-3">
+                    <div className="flex justify-between items-center text-xs">
+                      <span>Converting to ZIP...</span>
+                      <span>{Math.round(conversionProgress)}%</span>
+                    </div>
+                    <Progress value={conversionProgress} className="h-1 mt-1" />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full flex items-center justify-center gap-2"
+                onClick={handleClickSelectFolder}
+              >
+                <FolderOpen className="h-4 w-4" />
+                Select Folder
+              </Button>
+            )}
+
+            {selectedFolder && !isConverting && (
+              <Button 
+                type="button"
+                className="w-full"
+                onClick={convertFolderToZip}
+                disabled={!selectedFolder}
+              >
+                <Archive className="h-4 w-4 mr-2" />
+                Convert to ZIP and Select
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
 
       <Button 
         type="button"
