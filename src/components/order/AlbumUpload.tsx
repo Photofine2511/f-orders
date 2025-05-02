@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,19 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
   const [isConverting, setIsConverting] = useState(false);
   const [conversionProgress, setConversionProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
+  
+  // Create a ref to store the polling interval ID
+  const pollIntervalIdRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Clean up any polling interval when component unmounts
+  useEffect(() => {
+    return () => {
+      if (pollIntervalIdRef.current) {
+        clearInterval(pollIntervalIdRef.current);
+        pollIntervalIdRef.current = null;
+      }
+    };
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // Check if files were selected
@@ -334,21 +347,131 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         if (response.data && response.data.success) {
           console.log('Upload successful:', response.data);
           
-          // Store the Drive file ID
+          // For large file uploads, the server may return "processing" status without an immediate file ID
+          if (response.data.status === 'processing' && useLargeFileUpload) {
+            const uploadId = response.data.uploadId;
+            
+            // Show a message that the file is processing
+            toast({
+              title: "Upload Processing",
+              description: "Your large file is being processed. Please wait...",
+            });
+            
+            // Start a polling mechanism to check for upload completion
+            let attempts = 0;
+            const maxAttempts = 30; // Try for 5 minutes (30 attempts * 10 seconds)
+            const pollInterval = 10000; // 10 seconds between each check
+            
+            console.log(`Starting upload status polling for large file with ID: ${uploadId}`);
+            
+            // Define the polling function
+            const pollUploadStatus = async () => {
+              if (attempts >= maxAttempts) {
+                console.error(`Max polling attempts (${maxAttempts}) reached without success`);
+                
+                // Clean up interval
+                if (pollIntervalIdRef.current) {
+                  clearInterval(pollIntervalIdRef.current);
+                  pollIntervalIdRef.current = null;
+                }
+                
+                // After max attempts, try one more direct check with the upload status endpoint
+                try {
+                  const finalFileId = await checkUploadStatus(albumName, fileToUpload.name, true);
+                  if (finalFileId) {
+                    // If we get a file ID now, we can continue
+                    onAlbumUploaded(albumName, fileToUpload, finalFileId);
+                  } else {
+                    toast({
+                      title: "Upload Timeout",
+                      description: "Upload processing timed out. Please check your orders or try again.",
+                      variant: "destructive"
+                    });
+                    setIsUploading(false);
+                  }
+                } catch (err) {
+                  console.error("Final check failed:", err);
+                  toast({
+                    title: "Upload Failed",
+                    description: "Upload processing failed. Please try again.",
+                    variant: "destructive"
+                  });
+                  setIsUploading(false);
+                }
+                
+                return;
+              }
+              
+              attempts++;
+              console.log(`Checking upload status, attempt ${attempts}/${maxAttempts}`);
+              
+              // Show incremental progress to the user to indicate activity
+              setStatusMessage(`Checking upload status (attempt ${attempts}/${maxAttempts})...`);
+              
+              // Increment progress bar slightly with each check to show activity
+              const currentProgress = Math.min(85 + (attempts * 0.5), 95);
+              setUploadProgress(currentProgress);
+              
+              try {
+                const pollResult = await checkUploadStatus(albumName, fileToUpload.name, true);
+                
+                if (pollResult) {
+                  // We got a file ID, stop polling and continue
+                  console.log(`Received file ID after polling: ${pollResult}`);
+                  
+                  // Clean up interval
+                  if (pollIntervalIdRef.current) {
+                    clearInterval(pollIntervalIdRef.current);
+                    pollIntervalIdRef.current = null;
+                  }
+                  
+                  // Update UI
+                  setUploadProgress(100);
+                  setStatusMessage("Upload complete!");
+                  
+                  toast({
+                    title: "Upload Complete",
+                    description: "Your file has been successfully uploaded.",
+                  });
+                  
+                  // Pass the file info to parent component with the drive file ID
+                  onAlbumUploaded(albumName, fileToUpload, pollResult);
+                } else {
+                  // Still processing, continue polling
+                  console.log(`Still processing (attempt ${attempts}/${maxAttempts})`);
+                }
+              } catch (error) {
+                console.error(`Error during poll attempt ${attempts}:`, error);
+                
+                // Update status message to inform user of retry
+                setStatusMessage(`Error checking status, will retry (${attempts}/${maxAttempts})...`);
+                
+                // Continue polling even after errors
+                // We don't need to handle each individual error as we'll keep trying
+              }
+            };
+            
+            // Start polling
+            pollIntervalIdRef.current = setInterval(pollUploadStatus, pollInterval);
+            
+            // Initial check after a short delay
+            setTimeout(pollUploadStatus, 3000);
+            
+            return;
+          }
+          
+          // For regular uploads that return a file ID immediately
           const fileId = response.data.fileInfo?.id;
           if (fileId) {
             setDriveFileId(fileId);
-          }
           
-          // Show detailed success message
-          toast({
-            title: "Upload Successful",
-            description: "Your album was successfully uploaded to Google Drive",
-          });
-          
-          // Pass the file info to parent component with the drive file ID
-          // This should happen only when we have a successful upload with a file ID
-          if (fileId) {
+            // Show detailed success message
+            toast({
+              title: "Upload Successful",
+              description: "Your album was successfully uploaded to Google Drive",
+            });
+            
+            // Pass the file info to parent component with the drive file ID
             console.log(`Calling onAlbumUploaded with Drive file ID: ${fileId}`);
             onAlbumUploaded(albumName, fileToUpload, fileId);
           } else {
@@ -456,9 +579,11 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
   };
   
   // Function to check if a large file upload succeeded despite a timeout
-  const checkUploadStatus = async (albumName: string, fileName: string) => {
+  const checkUploadStatus = async (albumName: string, fileName: string, returnFileId = false) => {
     try {
-      setStatusMessage("Checking upload status... The file may still be uploading to Google Drive");
+      if (!returnFileId) {
+        setStatusMessage("Checking upload status... The file may still be uploading to Google Drive");
+      }
       
       // Get authentication token
       const token = localStorage.getItem('photofine_token');
@@ -471,7 +596,9 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         },
         headers: {
           'Authorization': token ? `Bearer ${token}` : '',
-        }
+        },
+        // Add timeout to prevent hanging
+        timeout: 10000 // 10 seconds timeout for status checks
       });
       
       if (response.data && response.data.success && response.data.fileInfo) {
@@ -481,6 +608,11 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         const fileId = response.data.fileInfo.id;
         if (fileId) {
           setDriveFileId(fileId);
+          
+          // If we're just returning the fileId (for polling), do that
+          if (returnFileId) {
+            return fileId;
+          }
           
           // Create a File object with the proper metadata
           const dummyFile = new File(
@@ -501,10 +633,19 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
             onAlbumUploaded(albumName, dummyFile, fileId);
           }, 1000);
         }
+      } else if (returnFileId) {
+        // For polling, just return null if not found yet
+        return null;
       } else {
         throw new Error("File upload could not be verified");
       }
     } catch (error) {
+      if (returnFileId) {
+        // For polling, just return null on error
+        console.error("Error checking upload status during polling:", error);
+        return null;
+      }
+      
       console.error("Error checking upload status:", error);
       
       toast({
@@ -513,9 +654,13 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         variant: "destructive",
       });
     } finally {
-      setIsUploading(false);
-      setUploadProgress(0);
+      if (!returnFileId) {
+        setIsUploading(false);
+        setUploadProgress(0);
+      }
     }
+    
+    return null;
   };
 
   const handleSubmit = () => {
