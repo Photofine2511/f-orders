@@ -37,6 +37,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
   const [selectedFolder, setSelectedFolder] = useState<FileList | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [conversionProgress, setConversionProgress] = useState(0);
+  const [statusMessage, setStatusMessage] = useState('');
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // Check if files were selected
@@ -238,9 +239,17 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         type: fileToUpload.type,
         lastModified: new Date(fileToUpload.lastModified).toISOString()
       });
-        
+      
       // Regular file upload
       console.log(`Regular file upload: ${fileToUpload.name} (${fileToUpload.size} bytes)`);
+      
+      // Check file size to determine upload method
+      const largeFileThreshold = 100 * 1024 * 1024; // 100MB
+      const useLargeFileUpload = fileToUpload.size > largeFileThreshold;
+      
+      if (useLargeFileUpload) {
+        console.log(`Using large file upload strategy for ${fileToUpload.name} (${(fileToUpload.size / (1024 * 1024)).toFixed(2)} MB)`);
+      }
       
       // Make sure the file object is valid before appending
       if (fileToUpload instanceof File && fileToUpload.size > 0) {
@@ -258,6 +267,11 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       
       formData.append('albumName', albumName);
       
+      // Add a flag to indicate this is a large file if applicable
+      if (useLargeFileUpload) {
+        formData.append('isLargeFile', 'true');
+      }
+      
       // Get token for authentication
       const token = localStorage.getItem('photofine_token');
       
@@ -268,28 +282,47 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       const CancelToken = axios.CancelToken;
       const source = CancelToken.source();
       
-      // Set a timeout of 5 minutes (300000ms) for large uploads
+      // Increased timeout for large files - 15 minutes instead of 5
+      const timeoutDuration = useLargeFileUpload ? 900000 : 300000; // 15 min or 5 min
+      
       const timeout = setTimeout(() => {
         source.cancel('Upload timeout - operation took too long');
-        toast({
-          title: "Upload Timeout",
-          description: "The upload is taking too long. Try uploading a smaller file.",
-          variant: "destructive",
-        });
-      }, 300000);
+        
+        // For large files, don't immediately show an error - check if upload still succeeded
+        if (useLargeFileUpload) {
+          checkUploadStatus(albumName, fileToUpload.name);
+        } else {
+          toast({
+            title: "Upload Timeout",
+            description: "The upload is taking too long. Try uploading a smaller file.",
+            variant: "destructive",
+          });
+        }
+      }, timeoutDuration);
       
       try {
-        const response = await axios.post(`${api.defaults.baseURL}/orders/upload-to-drive`, formData, {
+        // For large files, we'll use a specialized endpoint with different handling
+        const endpoint = useLargeFileUpload 
+          ? `${api.defaults.baseURL}/orders/upload-large-file-to-drive` 
+          : `${api.defaults.baseURL}/orders/upload-to-drive`;
+      
+        const response = await axios.post(endpoint, formData, {
           headers: {
             'Content-Type': 'multipart/form-data',
             'Authorization': token ? `Bearer ${token}` : '',
+            'X-Upload-ID': `${Date.now()}-${fileToUpload.name.replace(/[^a-zA-Z0-9]/g, '')}`, // Unique upload ID
           },
-          cancelToken: source.token, // Add the cancel token for timeout
-          timeout: 300000, // Also set axios timeout to 5 minutes
+          cancelToken: source.token,
+          timeout: timeoutDuration,
           onUploadProgress: (progressEvent) => {
             if (progressEvent.total) {
               const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
               setUploadProgress(percentCompleted);
+              
+              // For large files, show slower progress for the Drive upload phase once the upload is complete
+              if (useLargeFileUpload && percentCompleted >= 100) {
+                simulateProgressForLargeFile();
+              }
             }
           }
         });
@@ -322,7 +355,14 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       } catch (axiosError) {
         // Make sure to clear the timeout if there's an error
         clearTimeout(timeout);
-        throw axiosError;
+        
+        // For large files, if it's a timeout error, we still want to check if the upload succeeded
+        if (useLargeFileUpload && axios.isAxiosError(axiosError) && 
+           (axiosError.code === 'ECONNABORTED' || axiosError.message.includes('timeout'))) {
+          checkUploadStatus(albumName, fileToUpload.name);
+        } else {
+          throw axiosError;
+        }
       }
     } catch (error) {
       console.error("Error uploading to Google Drive:", error);
@@ -345,7 +385,7 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
           toast({
             title: "Upload Timeout",
-            description: "The upload timed out. Try uploading a smaller file.",
+            description: "The upload timed out but may have still succeeded. Check your orders in a few minutes.",
             variant: "destructive",
           });
         } else if (error.response?.status === 413) {
@@ -382,6 +422,90 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       setUploadProgress(0);
     }
   }, [albumName, onAlbumUploaded, toast]);
+  
+  // Function to simulate progress for large file uploads to Google Drive
+  const simulateProgressForLargeFile = () => {
+    // We'll show a simulated progress to indicate the file is being processed by Google Drive
+    // This provides feedback even when the actual upload to Drive is happening server-side
+    let progress = 0;
+    const interval = setInterval(() => {
+      progress += 1;
+      if (progress <= 95) {
+        setUploadProgress(100 + (progress * 0.95)); // Show progress as 100-195% (scaled back to 100%)
+        
+        // Update the message to show it's being processed by Google Drive
+        setStatusMessage(`Processing in Google Drive... please wait`);
+      } else {
+        clearInterval(interval);
+      }
+    }, 1000);
+    
+    // Clear the interval after 5 minutes to prevent memory leaks
+    setTimeout(() => {
+      clearInterval(interval);
+    }, 300000);
+    
+    return interval;
+  };
+  
+  // Function to check if a large file upload succeeded despite a timeout
+  const checkUploadStatus = async (albumName: string, fileName: string) => {
+    try {
+      setStatusMessage("Checking upload status... The file may still be uploading to Google Drive");
+      
+      // Get authentication token
+      const token = localStorage.getItem('photofine_token');
+      
+      // Call an endpoint to check if the file exists in Google Drive
+      const response = await axios.get(`${api.defaults.baseURL}/orders/check-upload-status`, {
+        params: { 
+          albumName,
+          fileName 
+        },
+        headers: {
+          'Authorization': token ? `Bearer ${token}` : '',
+        }
+      });
+      
+      if (response.data && response.data.success && response.data.fileInfo) {
+        console.log('File was successfully uploaded:', response.data);
+        
+        // Store the Drive file ID
+        const fileId = response.data.fileInfo.id;
+        if (fileId) {
+          setDriveFileId(fileId);
+        }
+        
+        // Create a File object with the proper metadata
+        const dummyFile = new File(
+          [new ArrayBuffer(1)], // Minimal content since we already have the file on Google Drive
+          fileName,
+          { type: "application/octet-stream" }
+        );
+        
+        // Pass the file info to parent component with the drive file ID
+        onAlbumUploaded(albumName, dummyFile, fileId);
+        
+        toast({
+          title: "Upload Completed",
+          description: "Your album was successfully uploaded to Google Drive",
+        });
+      } else {
+        throw new Error("File upload could not be verified");
+      }
+    } catch (error) {
+      console.error("Error checking upload status:", error);
+      
+      toast({
+        title: "Upload Status Unknown",
+        description: "We couldn't confirm if your upload succeeded. Please check your orders or try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
+  };
 
   const handleSubmit = () => {
     if (!file || !albumName.trim()) {
@@ -516,10 +640,15 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       {isUploading && (
         <div className="space-y-2">
           <div className="flex justify-between items-center">
-            <span className="text-sm">Uploading to Google Drive...</span>
-            <span className="text-sm">{Math.round(uploadProgress)}%</span>
+            <span className="text-sm">{statusMessage || "Uploading to Google Drive..."}</span>
+            <span className="text-sm">{Math.min(Math.round(uploadProgress), 100)}%</span>
           </div>
-          <Progress value={uploadProgress} className="w-full" />
+          <Progress value={Math.min(uploadProgress, 100)} className="w-full" />
+          {uploadProgress > 100 && (
+            <p className="text-xs text-muted-foreground">
+              File upload complete. Processing in Google Drive - please wait...
+            </p>
+          )}
         </div>
       )}
 
