@@ -76,6 +76,9 @@ export const OrderForm = ({ albumName, albumFile, driveFileId }: OrderFormProps)
       // Create FormData for multipart file upload
       const formData = new FormData();
       
+      // Log whether we have a Drive file ID for debugging
+      console.log('Order submission with driveFileId:', driveFileId);
+      
       // If we already have a Google Drive file ID, we'll send that instead of re-uploading the file
       if (driveFileId) {
         formData.append('driveFileId', driveFileId);
@@ -83,9 +86,13 @@ export const OrderForm = ({ albumName, albumFile, driveFileId }: OrderFormProps)
         formData.append('fileName_info', albumFile.name);
         formData.append('fileSize_info', albumFile.size.toString());
         formData.append('fileMimeType_info', albumFile.type);
+        
+        // Don't append the actual file when we have a driveFileId
+        console.log(`Using existing Google Drive file ID: ${driveFileId}`);
       } else {
         // No Drive ID, so we need to upload the file
         formData.append('file', albumFile);
+        console.log(`No Drive file ID, will upload file: ${albumFile.name}`);
       }
       
       formData.append('albumName', albumName);

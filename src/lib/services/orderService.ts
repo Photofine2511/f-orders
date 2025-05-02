@@ -7,6 +7,19 @@ export const createOrder = async (orderData: FormData, onUploadProgress?: (progr
   // Use axios directly to have access to upload progress
   const token = localStorage.getItem('photofine_token');
   
+  // Log what we're sending
+  console.log('Creating order with data:', {
+    hasDriveFileId: orderData.has('driveFileId'),
+    hasFile: orderData.has('file'),
+    albumName: orderData.get('albumName')
+  });
+  
+  // If we have a driveFileId, we should NOT be uploading the file again
+  if (orderData.has('driveFileId') && orderData.has('file')) {
+    console.warn('Both driveFileId and file are present, removing file to avoid double upload');
+    orderData.delete('file');
+  }
+  
   const response = await axios.post(`${api.defaults.baseURL}/orders`, orderData, {
     headers: {
       'Content-Type': 'multipart/form-data',

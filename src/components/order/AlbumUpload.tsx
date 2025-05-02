@@ -340,14 +340,21 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
             setDriveFileId(fileId);
           }
           
-          // Pass the file info to parent component with the drive file ID
-          onAlbumUploaded(albumName, fileToUpload, fileId);
-          
           // Show detailed success message
           toast({
             title: "Upload Successful",
             description: "Your album was successfully uploaded to Google Drive",
           });
+          
+          // Pass the file info to parent component with the drive file ID
+          // This should happen only when we have a successful upload with a file ID
+          if (fileId) {
+            console.log(`Calling onAlbumUploaded with Drive file ID: ${fileId}`);
+            onAlbumUploaded(albumName, fileToUpload, fileId);
+          } else {
+            console.error('Missing Google Drive file ID in successful response');
+            throw new Error('Missing Google Drive file ID in response');
+          }
         } else {
           console.error('Upload response indicates failure:', response.data);
           throw new Error(response.data?.message || "Upload to Google Drive failed");
@@ -474,22 +481,26 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
         const fileId = response.data.fileInfo.id;
         if (fileId) {
           setDriveFileId(fileId);
+          
+          // Create a File object with the proper metadata
+          const dummyFile = new File(
+            [new ArrayBuffer(1)], // Minimal content since we already have the file on Google Drive
+            fileName,
+            { type: "application/octet-stream" }
+          );
+          
+          toast({
+            title: "Upload Completed",
+            description: "Your album was successfully uploaded to Google Drive",
+          });
+          
+          // Wait a moment before proceeding to make sure toast is shown
+          setTimeout(() => {
+            // Pass the file info to parent component with the drive file ID
+            console.log(`Calling onAlbumUploaded with recovered Drive file ID: ${fileId}`);
+            onAlbumUploaded(albumName, dummyFile, fileId);
+          }, 1000);
         }
-        
-        // Create a File object with the proper metadata
-        const dummyFile = new File(
-          [new ArrayBuffer(1)], // Minimal content since we already have the file on Google Drive
-          fileName,
-          { type: "application/octet-stream" }
-        );
-        
-        // Pass the file info to parent component with the drive file ID
-        onAlbumUploaded(albumName, dummyFile, fileId);
-        
-        toast({
-          title: "Upload Completed",
-          description: "Your album was successfully uploaded to Google Drive",
-        });
       } else {
         throw new Error("File upload could not be verified");
       }
@@ -517,8 +528,15 @@ export const AlbumUpload = ({ onAlbumUploaded }: AlbumUploadProps) => {
       return;
     }
     
-    // Always use Google Drive upload for all files
-    uploadToGoogleDrive(file);
+    // Only proceed with upload if we don't already have a Drive file ID
+    if (!driveFileId) {
+      console.log(`Starting upload to Google Drive for ${file.name}`);
+      uploadToGoogleDrive(file);
+    } else {
+      console.log(`File already uploaded with ID: ${driveFileId}, proceeding to next step`);
+      // If we already have a Drive file ID, skip upload and proceed to next step
+      onAlbumUploaded(albumName, file, driveFileId);
+    }
   };
 
   const clearFile = () => {
